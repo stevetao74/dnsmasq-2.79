@@ -160,6 +160,13 @@ struct myoption {
 #define LOPT_DHCPTTL       348
 #define LOPT_TFTP_MTU      349
 #define LOPT_REPLY_DELAY   350
+#define LOPT_RULE_HOSTNAMES 351
+#define LOPT_RULE_NAME     352
+#define LOPT_RULE_ACTION   353
+#define LOPT_RULE_MAC      354
+#define LOPT_RULE_MODE     355
+#define LOPT_RULE_WEEKDAYS 356
+#define LOPT_RULE_TIMERANGE 357
  
 #ifdef HAVE_GETOPT_LONG
 static const struct option opts[] =  
@@ -325,6 +332,13 @@ static const struct myoption opts[] =
     { "script-arp", 0, 0, LOPT_SCRIPT_ARP },
     { "dhcp-ttl", 1, 0 , LOPT_DHCPTTL },
     { "dhcp-reply-delay", 1, 0, LOPT_REPLY_DELAY },
+    { "dnsfilter_hostnames", 1, 0, LOPT_RULE_HOSTNAMES},
+    { "dnsfilter_name", 1, 0, LOPT_RULE_NAME},
+    { "dnsfilter_action", 1, 0, LOPT_RULE_ACTION},
+    { "dnsfilter_mac", 1, 0, LOPT_RULE_MAC},
+    { "dnsfilter_mode", 1, 0, LOPT_RULE_MODE},
+    { "dnsfilter_weekdays", 1, 0, LOPT_RULE_WEEKDAYS},
+    { "dnsfilter_timerange", 1, 0, LOPT_RULE_TIMERANGE},
     { NULL, 0, 0, 0 }
   };
 
@@ -1492,6 +1506,43 @@ void reset_option_bool(unsigned int opt)
     daemon->options &= ~(1u << opt);
   else
     daemon->options2 &= ~(1u << (opt - 32));
+}
+
+static int split_timerange(char *timerange, char *arr_timerange[], char *arr_time[6])
+{
+	int i = 0;
+	char *buftmp = NULL;
+	int idx_time = 0;
+	int idx_timerange = 0;
+
+	arr_timerange[0] = strtok_r(timerange, ",", &buftmp);
+	while (arr_timerange[idx_timerange])
+	{
+		if (idx_timerange > 2)
+		{
+			return -1;
+		}
+		idx_timerange++;
+		arr_timerange[idx_timerange] = strtok_r(NULL, ",", &buftmp);
+	}
+
+	while (arr_timerange[i])
+	{
+		if (i > 3)
+		{
+			return -1;
+		}
+
+		arr_time[idx_time]=strtok_r(arr_timerange[i], "-", &buftmp);
+		while (arr_time[idx_time])
+		{
+			idx_time++;
+			arr_time[idx_time] = strtok_r(NULL, "-", &buftmp);
+		}
+		++i;
+	}
+
+	return 0;
 }
 
 static int one_opt(int option, char *arg, char *errstr, char *gen_err, int command_line, int servers_only)
@@ -4189,7 +4240,139 @@ err:
 	break;
       }
 #endif
-		
+
+    case LOPT_RULE_HOSTNAMES:
+    case LOPT_RULE_NAME:
+    case LOPT_RULE_ACTION:
+    case LOPT_RULE_MAC:
+    case LOPT_RULE_MODE:
+    case LOPT_RULE_WEEKDAYS:
+    case LOPT_RULE_TIMERANGE:
+    {
+	  static int sequence = 0;
+      static struct server_rule *serv_rule = NULL;
+      if (option == LOPT_RULE_HOSTNAMES)
+      {
+		if (sequence == 0)
+		{
+			sequence++;
+		}else{
+			ret_err(_("DNS FILTER RULE: miss hostnames"));
+		}
+
+        serv_rule = opt_malloc(sizeof(struct server_rule));
+
+		if (serv_rule == NULL){
+			ret_err(_("serv_rule malloc"));
+		}
+
+        memset(serv_rule, 0, sizeof(struct server_rule));
+        strncpy(serv_rule->hostnames, arg, sizeof(serv_rule->hostnames));
+      }else if(option == LOPT_RULE_NAME)
+      {
+		if (sequence == 1)
+		{
+			sequence++;
+		}else{
+			ret_err(_("DNS FILTER RULE: miss rulename"));
+		}
+        strncpy(serv_rule->name, arg, sizeof(serv_rule->name));
+      }else if(option == LOPT_RULE_ACTION)
+      {
+		if (sequence == 2)
+		{
+			sequence++;
+		}else{
+			ret_err(_("DNS FILTER RULE: : miss action"));
+		}
+        serv_rule->action = (char)atoi(arg);
+		if (serv_rule->action < 0 || serv_rule->action > 2)
+		{
+			ret_err(_("DNS FILTER RULE: invalid param action"));
+		}
+      }
+      else if(option == LOPT_RULE_MAC)
+      {
+		if (sequence == 3)
+		{
+			sequence++;
+		}else{
+			ret_err(_("DNS FILTER RULE: miss mac"));
+		}
+        strncpy(serv_rule->mac, arg, sizeof(serv_rule->mac));
+      }
+      else if(option == LOPT_RULE_MODE)
+      {
+		if (sequence == 4)
+		{
+			sequence++;
+		}else{
+			ret_err(_("DNS FILTER RULE: miss mode"));
+		}
+        serv_rule->mode = (char)atoi(arg);
+
+		if (serv_rule->mode < 0 || serv_rule->mode > 1)
+		{
+			ret_err(_("DNS FILTER RULE: invalid param mode"));
+		}
+      }
+      else if(option == LOPT_RULE_WEEKDAYS)
+      {
+		if (sequence == 5)
+		{
+			sequence++;
+		}else{
+			ret_err(_("DNS FILTER RULE: miss weekdays"));
+		}
+        strncpy(serv_rule->weekdays, arg, sizeof(serv_rule->weekdays));
+      }
+      else if(option == LOPT_RULE_TIMERANGE)
+      {
+		  int ret = 0;
+          char *tmptimerange = NULL;
+          char *arr_timerange[3] = {NULL};
+          struct server_rule *tmpserv_rule = NULL;
+
+		if (sequence == 6)
+		{
+			sequence = 0;
+		}else{
+			ret_err(_("DNS FILTER RULE: miss timerange"));
+		}
+
+          tmptimerange = strdup(arg);
+
+          if (tmptimerange[0] != '\0')
+          {
+            ret = split_timerange(tmptimerange, arr_timerange, serv_rule->timerange);
+			if (ret == -1)
+			{
+				ret_err(_("DNS FILTER RULE: invalid param timerange"));
+			}
+          }
+
+          if (serv_rule->mac[0] == '\0')
+          {
+            tmpserv_rule = daemon->server_rules;
+            if (tmpserv_rule == NULL){
+              daemon->server_rules = serv_rule;
+              break;
+            }
+          }else if (serv_rule->mac[0] != '\0'){
+            tmpserv_rule = daemon->server_rules_mac;
+            if (tmpserv_rule == NULL){
+              daemon->server_rules_mac = serv_rule;
+              break;
+            }
+          }
+
+          serv_rule->next = tmpserv_rule->next;
+          tmpserv_rule->next = serv_rule;
+      }
+
+      break;
+    }
+
     default:
       ret_err(_("unsupported option (check that dnsmasq was compiled with DHCP/TFTP/DNSSEC/DBus support)"));
       
@@ -4680,6 +4863,10 @@ void read_opts(int argc, char **argv, char *compile_opts)
   daemon->soa_expiry = SOA_EXPIRY;
   daemon->max_port = MAX_PORT;
   daemon->min_port = MIN_PORT;
+  daemon->server_rules = NULL;
+  daemon->server_rules_mac = NULL;
+  daemon->is_ntp = 0;
+  memset(&daemon->match_server_rule, 0, sizeof(struct server_rule));
 
 #ifndef NO_ID
   add_txt("version.bind", "dnsmasq-" VERSION, 0 );

@@ -229,6 +229,20 @@ static unsigned int search_servers(time_t now, struct all_addr **addrpp, unsigne
   return  flags;
 }
 
+in_addr_t find_lanip(char *interface_name)
+{
+ struct irec *tmpirec = NULL;
+ for (tmpirec = daemon->interfaces; tmpirec; tmpirec = tmpirec->next)
+ {
+	 if (strncmp(tmpirec->name, interface_name, strlen(tmpirec->name)) == 0)
+	 {
+		 return tmpirec->addr.in.sin_addr.s_addr;
+	 }
+ }
+
+ return 0;
+}
+
 static int forward_query(int udpfd, union mysockaddr *udpaddr,
 			 struct all_addr *dst_addr, unsigned int dst_iface,
 			 struct dns_header *header, size_t plen, time_t now, 
@@ -237,8 +251,21 @@ static int forward_query(int udpfd, union mysockaddr *udpaddr,
   char *domain = NULL;
   int type = SERV_DO_DNSSEC, norebind = 0;
   struct all_addr *addrp = NULL;
+  struct all_addr tmpbrlan;
   unsigned int flags = 0;
   struct server *start = NULL;
+
+	if (daemon->match_ret == 0 && daemon->match_server_rule.mode == 0)
+	{
+		if (daemon->match_server_rule.action == 1){
+			flags = F_IPV4;
+			tmpbrlan.addr.addr4.s_addr = find_lanip("br-lan");
+			addrp = &tmpbrlan;
+		}else if (daemon->match_server_rule.action == 2){
+			flags = F_NXDOMAIN;
+		}
+	}else if (daemon->match_ret == -1 || (daemon->match_ret == 0 && daemon->match_server_rule.mode == 1)){
+
 #ifdef HAVE_DNSSEC
   void *hash = hash_questions(header, plen, daemon->namebuff);
   int do_dnssec = 0;
@@ -546,6 +573,7 @@ static int forward_query(int udpfd, union mysockaddr *udpaddr,
       free_frec(forward); /* cancel */
     }	  
   
+	}
   /* could not send on, return empty answer or address if known for whole domain */
   if (udpfd != -1)
     {
@@ -1135,6 +1163,226 @@ void reply_query(int fd, int family, time_t now)
     }
 }
 
+void getdstmac(struct in_addr src_addr_4, char *bufmac)
+{
+	FILE* fp = NULL;
+	int is_first_line = 1;
+	char tmp[512] = {0};
+	char bufsplit[5][20] = {'\0'};
+
+	fp = fopen("/proc/net/arp", "r");
+	while (fgets(tmp, sizeof(tmp), fp) != NULL) {
+		int i = 0;
+		int j = 0;
+
+		if (is_first_line) {
+				is_first_line = 0;
+				memset(tmp, '\0', sizeof(tmp));
+				continue;
+		}
+
+		sscanf(tmp, "%s%*[ ]%s%*[ ]%s%*[ ]%s", bufsplit[0], bufsplit[1], bufsplit[2], bufsplit[3]);
+
+		if (inet_addr(bufsplit[0]) == src_addr_4.s_addr)
+		{
+			while(bufsplit[3][i] != '\0')
+			{
+				if (bufsplit[3][i] != ':') {
+					bufmac[j] = bufsplit[3][i];
+					++j;
+				}
+				++i;
+			}
+			return;
+		}
+
+		memset(tmp, '\0', sizeof(tmp));
+		memset(bufsplit, '\0', sizeof(bufsplit));
+	}
+}
+
+time_t str2time(char *str_time){
+	struct tm stm;
+	strptime(str_time, "%Y-%m-%d %H:%M:%S",&stm);
+
+	time_t t = mktime(&stm);
+	return t;
+}
+
+int time_match(struct server_rule *tmprule)
+{
+	struct tm *p;
+	char weekday[2] = {'\0'};
+	int j = 0;
+	int is_in_time = 0;
+	time_t time1 = 0;
+	time_t time2 = 0;
+	time_t timenow = 0;
+	char strtmfmt1[17] = {'\0'};
+	char strtmfmt2[17] = {'\0'};
+	char *tmp00 = NULL;
+
+	timenow = time(NULL);
+	p = gmtime(&timenow);
+
+	if (p->tm_wday == 0)
+	{
+		sprintf(weekday, "%d", 7);
+	}else
+	{
+		sprintf(weekday, "%d", p->tm_wday);
+	}
+
+	if (tmprule->weekdays[0] == '\0')
+	{
+		return -2;
+	}else if (strstr(tmprule->weekdays, weekday) == NULL)
+	{
+		return -1;
+	}else if (strstr(tmprule->weekdays, weekday) != NULL)
+	{
+		if (tmprule->timerange[0] == NULL)
+		{
+			return -2;
+		}
+
+		while (tmprule->timerange[j])
+		{
+			memset(strtmfmt1, '\0', sizeof(strtmfmt1));
+			memset(strtmfmt2, '\0', sizeof(strtmfmt2));
+			if (j % 2 == 0)
+			{
+				sprintf(strtmfmt1, "%04d-%02d-%02d %s:00", p->tm_year + 1900, p->tm_mon + 1, p->tm_mday, tmprule->timerange[j]);
+				time1 = str2time(strtmfmt1);
+				tmp00 = tmprule->timerange[j];
+			}else if (j % 2 == 1){
+				if (tmp00 && strncmp(tmp00, tmprule->timerange[j], strlen(tmp00)) == 0 && strncmp(tmp00, "00:00", strlen(tmp00)) == 0)
+				{
+					return 0;
+				}
+
+				sprintf(strtmfmt2, "%04d-%02d-%02d %s:00", p->tm_year + 1900, p->tm_mon + 1, p->tm_mday, tmprule->timerange[j]);
+				time2 = str2time(strtmfmt2);
+				if (timenow < time1 || timenow > time2)
+				{
+					is_in_time = 1;
+				}
+			}
+
+			++j;
+		}
+
+		if (is_in_time == 1)
+		{
+			return -1;
+		}
+	}
+
+	return 0;
+}
+
+unsigned ntpstatus()
+{
+	FILE *fp = NULL;
+	char buff[3] = {'\0'};
+
+	fp = popen("ntpstat | echo $?", "r");
+	if (fp == NULL)
+	{
+		return 1;
+	}
+	fread(buff, 1, 2, fp);
+	pclose(fp);
+
+	return (unsigned)atoi(buff);
+}
+
+int macth_rule_dnsfilter(struct in_addr src_addr_4)
+{
+	char *tmpname = NULL;
+	char srcmac[18] = {'\0'};
+	int timematching = 0;
+	int is_found = 0;
+	struct server_rule *tmprule = daemon->server_rules, *tmprulemac = daemon->server_rules_mac;
+
+	if (!daemon->is_ntp)
+	{
+		daemon->is_ntp = (ntpstatus() == 0 ? 1 : 0);
+	}
+
+	if (!daemon->is_ntp)
+	{
+		return -1;
+	}
+
+	memset(&daemon->match_server_rule, 0, sizeof(struct server_rule));
+	getdstmac(src_addr_4, srcmac);
+	my_syslog(LOG_INFO, _("===================func:%s, line:%d, mac:%s"), __FUNCTION__, __LINE__, srcmac);
+
+	tmpname = daemon->namebuff;
+	if (strncmp(daemon->namebuff, "www.", 4) == 0)
+	{
+		tmpname = daemon->namebuff + 4;
+	}
+
+	while (tmprulemac)
+	{
+		if (srcmac[0] == '\0')
+		{
+			break;
+		}
+
+		if (strncmp(srcmac, tmprulemac->mac, strlen(srcmac)) == 0)
+		{
+			timematching = time_match(tmprulemac);
+			if(timematching == -2)
+			{
+				return -2;
+			}else if (timematching == 0)
+			{
+				if (strstr(tmprulemac->hostnames, tmpname))
+				{
+					memcpy(&daemon->match_server_rule, tmprulemac, sizeof(struct server_rule));
+					return 0;
+				}else if (is_found == 0){
+					daemon->match_server_rule.mode = (tmprulemac->mode == 0 ? 1 : 0);
+					daemon->match_server_rule.action = tmprulemac->action;
+					is_found = 1;
+				}
+			}
+		}
+		tmprulemac = tmprulemac->next;
+	}
+
+	while (tmprule)
+	{
+		timematching = time_match(tmprule);
+		if (timematching == -2)
+		{
+			return -2;
+		}else if(timematching == 0)
+		{
+			if(strstr(tmprule->hostnames, tmpname))
+			{
+				memcpy(&daemon->match_server_rule, tmprule, sizeof(struct server_rule));
+				return 0;
+			}else if (is_found == 0){
+				daemon->match_server_rule.mode = (tmprule->mode == 0 ? 1 : 0);
+				daemon->match_server_rule.action = tmprule->action;
+				is_found = 1;
+			}
+		}
+		tmprule = tmprule->next;
+	}
+
+	if (is_found == 1)
+	{
+		return 0;
+	}
+
+	return -1;
+
+}
 
 void receive_query(struct listener *listen, time_t now)
 {
@@ -1417,7 +1665,23 @@ void receive_query(struct listener *listen, time_t now)
 	return;
 #endif
     }
-  
+	daemon->match_ret = macth_rule_dnsfilter(source_addr.in.sin_addr);
+	my_syslog(LOG_INFO, _("===================func:%s, line:%d, ret:%d, mode:%d, action:%d"), __FUNCTION__, __LINE__, daemon->match_ret, daemon->match_server_rule.mode, daemon->match_server_rule.action);
+
+	if (daemon->match_ret == -2)
+	{
+		return;
+	}else if (daemon->match_ret == 0)
+	{
+		if (daemon->match_server_rule.mode == 0)
+		{
+			if (daemon->match_server_rule.action == 0)
+			{
+				return;
+			}
+		}
+	}
+
   if (find_pseudoheader(header, (size_t)n, NULL, &pheader, NULL, NULL))
     { 
       unsigned short flags;
@@ -1459,8 +1723,13 @@ void receive_query(struct listener *listen, time_t now)
       if (header->hb4 & HB4_AD)
 	ad_reqd = 1;
 
+	if (daemon->match_ret == -1 || (daemon->match_ret != -1 && daemon->match_server_rule.mode == 1))
+	{// cache
       m = answer_request(header, ((char *) header) + udp_size, (size_t)n, 
 			 dst_addr_4, netmask, now, ad_reqd, do_bit, have_pseudoheader);
+	}else if (daemon->match_ret != -1 && daemon->match_server_rule.mode == 0){
+		m = 0;
+	}
       
       if (m >= 1)
 	{

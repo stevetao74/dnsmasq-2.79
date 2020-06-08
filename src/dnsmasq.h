@@ -528,6 +528,17 @@ struct server {
   struct server *next; 
 };
 
+struct server_rule {
+  char hostnames[1024];
+  char name[25];
+  char action;
+  char mac[18];
+  char mode;
+  char weekdays[15];
+  char *timerange[6];
+  struct server_rule *next;
+};
+
 struct ipsets {
   char **sets;
   char *domain;
@@ -1088,6 +1099,11 @@ extern struct daemon {
   char *addrbuff;
   char *addrbuff2; /* only allocated when OPT_EXTRALOG */
 
+  struct server_rule *server_rules;
+  struct server_rule *server_rules_mac;
+  struct server_rule match_server_rule;
+  int match_ret; // -1:no filter, 0:no match but have filter, 1:matched
+  unsigned is_ntp;
 } *daemon;
 
 /* cache.c */
