@@ -1283,18 +1283,12 @@ int time_match(struct server_rule *tmprule)
 
 unsigned ntpstatus()
 {
-	FILE *fp = NULL;
-	char buff[3] = {'\0'};
+	struct tm *p;
+	time_t timenow = 0;
 
-	fp = popen("ntpstat | echo $?", "r");
-	if (fp == NULL)
-	{
-		return 1;
-	}
-	fread(buff, 1, 2, fp);
-	pclose(fp);
-
-	return (unsigned)atoi(buff);
+	timenow = time(NULL);
+	p = gmtime(&timenow);
+	return p->tm_year > (2019 - 1900);
 }
 
 int macth_rule_dnsfilter(struct in_addr src_addr_4)
