@@ -1283,11 +1283,12 @@ int time_match(struct server_rule *tmprule)
 
 unsigned ntpstatus()
 {
-	struct tm *p;
+	struct tm *p = NULL;
 	time_t timenow = 0;
 
 	timenow = time(NULL);
 	p = gmtime(&timenow);
+
 	return p->tm_year > (2019 - 1900);
 }
 
@@ -1301,7 +1302,7 @@ int macth_rule_dnsfilter(struct in_addr src_addr_4)
 
 	if (!daemon->is_ntp)
 	{
-		daemon->is_ntp = (ntpstatus() == 0 ? 1 : 0);
+		daemon->is_ntp = ntpstatus();
 	}
 
 	if (!daemon->is_ntp)
@@ -1311,7 +1312,6 @@ int macth_rule_dnsfilter(struct in_addr src_addr_4)
 
 	memset(&daemon->match_server_rule, 0, sizeof(struct server_rule));
 	getdstmac(src_addr_4, srcmac);
-	my_syslog(LOG_INFO, _("===================func:%s, line:%d, mac:%s"), __FUNCTION__, __LINE__, srcmac);
 
 	tmpname = daemon->namebuff;
 	if (strncmp(daemon->namebuff, "www.", 4) == 0)
@@ -1660,7 +1660,6 @@ void receive_query(struct listener *listen, time_t now)
 #endif
     }
 	daemon->match_ret = macth_rule_dnsfilter(source_addr.in.sin_addr);
-	my_syslog(LOG_INFO, _("===================func:%s, line:%d, ret:%d, mode:%d, action:%d"), __FUNCTION__, __LINE__, daemon->match_ret, daemon->match_server_rule.mode, daemon->match_server_rule.action);
 
 	if (daemon->match_ret == -2)
 	{
