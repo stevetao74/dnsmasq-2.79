@@ -1289,7 +1289,10 @@ unsigned ntpstatus()
 	timenow = time(NULL);
 	p = gmtime(&timenow);
 
-	return p->tm_year > (2019 - 1900);
+	if (p != NULL)
+		return p->tm_year > (2019 - 1900);
+	
+	return 0;
 }
 
 int macth_rule_dnsfilter(struct in_addr src_addr_4)
