@@ -1199,6 +1199,7 @@ void getdstmac(struct in_addr src_addr_4, char *bufmac)
 		memset(tmp, '\0', sizeof(tmp));
 		memset(bufsplit, '\0', sizeof(bufsplit));
 	}
+	close(fp);
 }
 
 time_t str2time(char *str_time){
