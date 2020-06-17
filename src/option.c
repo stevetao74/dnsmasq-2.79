@@ -4270,7 +4270,7 @@ err:
         strncpy(serv_rule->hostnames, arg, sizeof(serv_rule->hostnames));
       }else if(option == LOPT_RULE_NAME)
       {
-		if (sequence == 1)
+		if (sequence == 3)
 		{
 			sequence++;
 		}else{
@@ -4279,7 +4279,7 @@ err:
         strncpy(serv_rule->name, arg, sizeof(serv_rule->name));
       }else if(option == LOPT_RULE_ACTION)
       {
-		if (sequence == 2)
+		if (sequence == 1)
 		{
 			sequence++;
 		}else{
@@ -4293,7 +4293,7 @@ err:
       }
       else if(option == LOPT_RULE_MAC)
       {
-		if (sequence == 3)
+		if (sequence == 2)
 		{
 			sequence++;
 		}else{
