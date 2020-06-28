@@ -902,7 +902,8 @@ int main (int argc, char **argv)
   /* Using inotify, have to select a resolv file at startup */
   poll_resolv(1, 0, now);
 #endif
-  
+  init_blockedtimes();
+
   while (1)
     {
       int t, timeout = -1;

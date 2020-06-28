@@ -243,6 +243,68 @@ in_addr_t find_lanip(char *interface_name)
  return 0;
 }
 
+void set_blockedtimes(struct server_rule *serverrule)
+{
+	int file_size = 0;
+	char *tmp = NULL;
+	char buff[30] = {0};
+	char *endptr = NULL;
+	FILE *fp = NULL;
+
+	if (serverrule->blockedtimes == 1 && serverrule->blockedtimes_in_file == 0)
+	{
+		fp = fopen("/tmp/dnsmasq_blockedtimes", "a");
+		if (fp == NULL)
+		{
+			my_syslog(LOG_ERR, "open file failed, error:%s", strerror(errno));
+			return;
+		}
+		fprintf(fp, "%u=%u\n", serverrule->idx, serverrule->blockedtimes);
+		fclose(fp);
+		return;
+	}else{
+		fp = fopen("/tmp/dnsmasq_blockedtimes", "r");
+		if (fp == NULL)
+		{
+			my_syslog(LOG_ERR, "open file failed, error:%s", strerror(errno));
+			return;
+		}
+
+		fseek(fp, 0, SEEK_END);
+		file_size = ftell(fp);
+		fseek(fp, 0, SEEK_SET);
+		tmp = (char *)calloc(file_size, sizeof(char));
+		if (tmp == NULL)
+		{
+			my_syslog(LOG_ERR, "malloc failed, error:%s", strerror(errno));
+		}
+
+		while(fgets(buff, sizeof(buff), fp) != NULL)
+		{
+			if (serverrule->idx == strtoul(buff, &endptr, 10))
+			{
+				memset(buff, 0, sizeof(buff));
+				sprintf(buff, "%u=%u\n", serverrule->idx, serverrule->blockedtimes);
+			}
+			strcat(tmp, buff);
+		}
+		fclose(fp);
+
+		fp = fopen("/tmp/dnsmasq_blockedtimes", "w");
+		if (fp == NULL)
+		{
+			my_syslog(LOG_ERR, "open file failed, error:%s", strerror(errno));
+			return;
+		}
+
+		fwrite(tmp, file_size, 1, fp);
+		fclose(fp);
+		free(tmp);
+	}
+
+	return;
+}
+
 static int forward_query(int udpfd, union mysockaddr *udpaddr,
 			 struct all_addr *dst_addr, unsigned int dst_iface,
 			 struct dns_header *header, size_t plen, time_t now, 
@@ -263,6 +325,7 @@ static int forward_query(int udpfd, union mysockaddr *udpaddr,
 			addrp = &tmpbrlan;
 		}else if (daemon->match_server_rule.action == 2){
 			flags = F_NXDOMAIN;
+			set_blockedtimes(&daemon->match_server_rule);
 		}
 	}else if (daemon->match_ret == -1 || (daemon->match_ret == 0 && daemon->match_server_rule.mode == 1)){
 
@@ -1265,7 +1328,7 @@ int time_match(struct server_rule *tmprule)
 
 				sprintf(strtmfmt2, "%04d-%02d-%02d %s:00", p->tm_year + 1900, p->tm_mon + 1, p->tm_mday, tmprule->timerange[j]);
 				time2 = str2time(strtmfmt2);
-				if (timenow < time1 || timenow > time2)
+				if (timenow >= time1 && timenow <= time2)
 				{
 					is_in_time = 1;
 				}
@@ -1276,11 +1339,11 @@ int time_match(struct server_rule *tmprule)
 
 		if (is_in_time == 1)
 		{
-			return -1;
+			return 0;
 		}
 	}
 
-	return 0;
+	return -1;
 }
 
 unsigned ntpstatus()
@@ -1341,11 +1404,21 @@ int macth_rule_dnsfilter(struct in_addr src_addr_4)
 			{
 				if (strstr(tmprulemac->hostnames, tmpname))
 				{
+					if (tmprulemac->mode == 0 && tmprulemac->action == 2)
+					{
+						tmprulemac->blockedtimes++;
+					}
 					memcpy(&daemon->match_server_rule, tmprulemac, sizeof(struct server_rule));
 					return 0;
 				}else if (is_found == 0){
+					daemon->match_server_rule.idx = tmprulemac->idx;
 					daemon->match_server_rule.mode = (tmprulemac->mode == 0 ? 1 : 0);
 					daemon->match_server_rule.action = tmprulemac->action;
+					if (daemon->match_server_rule.mode == 0 && daemon->match_server_rule.action == 2)
+					{
+						tmprulemac->blockedtimes++;
+					}
+					daemon->match_server_rule.blockedtimes = tmprulemac->blockedtimes;
 					is_found = 1;
 				}
 			}
@@ -1363,11 +1436,21 @@ int macth_rule_dnsfilter(struct in_addr src_addr_4)
 		{
 			if(strstr(tmprule->hostnames, tmpname))
 			{
+				if (tmprule->mode == 0 && tmprule->action == 2)
+				{
+					tmprule->blockedtimes++;
+				}
 				memcpy(&daemon->match_server_rule, tmprule, sizeof(struct server_rule));
 				return 0;
 			}else if (is_found == 0){
+				daemon->match_server_rule.idx = tmprule->idx;
 				daemon->match_server_rule.mode = (tmprule->mode == 0 ? 1 : 0);
 				daemon->match_server_rule.action = tmprule->action;
+				if (daemon->match_server_rule.mode == 0 && daemon->match_server_rule.action == 2)
+				{
+					tmprule->blockedtimes++;
+				}
+				daemon->match_server_rule.blockedtimes = tmprule->blockedtimes;
 				is_found = 1;
 			}
 		}

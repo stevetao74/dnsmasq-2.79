@@ -536,6 +536,9 @@ struct server_rule {
   char mode;
   char weekdays[15];
   char *timerange[6];
+  unsigned idx;
+  unsigned blockedtimes;
+  unsigned char blockedtimes_in_file;
   struct server_rule *next;
 };
 
@@ -1285,6 +1288,7 @@ int send_from(int fd, int nowild, char *packet, size_t len,
 void resend_query(void);
 struct randfd *allocate_rfd(int family);
 void free_rfd(struct randfd *rfd);
+void init_blockedtimes();
 
 /* network.c */
 int indextoname(int fd, int index, char *name);
