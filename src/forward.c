@@ -1419,6 +1419,7 @@ int macth_rule_dnsfilter(struct in_addr src_addr_4)
 						tmprulemac->blockedtimes++;
 					}
 					daemon->match_server_rule.blockedtimes = tmprulemac->blockedtimes;
+					daemon->match_server_rule.blockedtimes_in_file = tmprulemac->blockedtimes_in_file;
 					is_found = 1;
 				}
 			}
@@ -1451,6 +1452,7 @@ int macth_rule_dnsfilter(struct in_addr src_addr_4)
 					tmprule->blockedtimes++;
 				}
 				daemon->match_server_rule.blockedtimes = tmprule->blockedtimes;
+				daemon->match_server_rule.blockedtimes_in_file = tmprule->blockedtimes_in_file;
 				is_found = 1;
 			}
 		}
