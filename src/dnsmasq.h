@@ -127,6 +127,10 @@ typedef unsigned long long u64;
 #  include <net/if_dl.h>
 #endif
 
+#include <uci.h>
+#include <libubus.h>
+#include <libubox/blobmsg_json.h>
+
 #if defined(HAVE_LINUX_NETWORK)
 #include <linux/capability.h>
 /* There doesn't seem to be a universally-available 
@@ -257,6 +261,31 @@ struct event_desc {
 #define MS_TFTP   LOG_USER
 #define MS_DHCP   LOG_DAEMON
 #define MS_SCRIPT LOG_MAIL
+
+#define UCI_SET 		0
+#define UCI_DEL 		1
+#define UCI_ADD_LIST	2
+#define UCI_DEL_LIST	3
+#define UCI_COMMIT		4
+
+enum LANINFO_ARRAY_POLICY
+{
+	LANINFO_ARRAY,
+	__LANINFO_ARRAY_MAX
+};
+
+enum LANINFO_POLICY
+{
+	LANINFO_MAC,
+	LANINFO_IPADDR,
+	__LANINFO_MAX
+};
+
+struct ap_laninfo
+{
+	char mac[17];
+	char ipaddr[16];
+};
 
 struct all_addr {
   union {
@@ -530,15 +559,16 @@ struct server {
 
 struct server_rule {
   char hostnames[1024];
-  char name[25];
+  char name[256];
   char action;
-  char mac[18];
+  char mac[17];
   char mode;
-  char weekdays[15];
+  char weekdays[20];
+  char oritimerange[256];
   char *timerange[6];
   unsigned idx;
+  unsigned uci_idx;
   unsigned blockedtimes;
-  unsigned char blockedtimes_in_file;
   struct server_rule *next;
 };
 
@@ -1102,6 +1132,7 @@ extern struct daemon {
   char *addrbuff;
   char *addrbuff2; /* only allocated when OPT_EXTRALOG */
 
+  struct server_rule *dns_filter_rules;
   struct server_rule *server_rules;
   struct server_rule *server_rules_mac;
   struct server_rule match_server_rule;
@@ -1251,6 +1282,18 @@ int read_write(int fd, unsigned char *packet, int size, int rw);
 int wildcard_match(const char* wildcard, const char* match);
 int wildcard_matchn(const char* wildcard, const char* match, int num);
 
+char *_get_config(const char *fmt, ...);
+void _set_config(int type, const char *fmt, ...);
+void _ubus_init();
+void _ubus_done();
+void _init_filter_rules();
+void _set_blockedtimes(struct server_rule *serverrule);
+int _time_match(struct server_rule *tmprule);
+int _macth_rule_dnsfilter(struct in_addr src_addr_4);
+int _get_lan_info();
+void _uninit_filter_rules();
+in_addr_t _find_lanip(char *interface_name);
+
 /* log.c */
 void die(char *message, char *arg1, int exit_code);
 int log_start(struct passwd *ent_pw, int errfd);
@@ -1288,7 +1331,6 @@ int send_from(int fd, int nowild, char *packet, size_t len,
 void resend_query(void);
 struct randfd *allocate_rfd(int family);
 void free_rfd(struct randfd *rfd);
-void init_blockedtimes();
 
 /* network.c */
 int indextoname(int fd, int index, char *name);

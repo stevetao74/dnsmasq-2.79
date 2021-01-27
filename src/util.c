@@ -20,6 +20,9 @@
 
 #include "dnsmasq.h"
 
+static struct ubus_context *ctx = NULL;
+static struct ap_laninfo arr_laninfo[64] = {0};
+
 #ifdef HAVE_BROKEN_RTC
 #include <sys/times.h>
 #endif
@@ -702,4 +705,682 @@ int wildcard_matchn(const char* wildcard, const char* match, int num)
     }
 
   return (!num) || (*wildcard == *match);
+}
+
+static const struct blobmsg_policy laninfo_array_policy[__LANINFO_ARRAY_MAX] = 
+{
+	{.name = "ctcapd.laninfo", .type = BLOBMSG_TYPE_ARRAY}
+};
+
+static struct blobmsg_policy laninfo_table_policy[64] = {0};
+
+static const struct blobmsg_policy laninfo_policy[__LANINFO_MAX] = 
+{
+	{.name = "mac", .type = BLOBMSG_TYPE_STRING},
+	{.name = "ipaddr", .type = BLOBMSG_TYPE_STRING},
+};
+
+char *_get_config(const char *fmt, ...)
+{
+	struct uci_context *c;
+	struct uci_ptr p;
+	struct uci_element *e;
+	char a[1024];
+	static char value[1024];
+
+	memset(value, 0, sizeof(value));
+
+	c = uci_alloc_context();
+
+	if (c == NULL) {
+		my_syslog(LOG_ERR, _("uci_alloc_context failed"));
+		return value;
+	}
+
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(a, sizeof(a), fmt, ap);
+	va_end(ap);
+
+	if (UCI_OK == uci_lookup_ptr(c, &p, a, true) && (p.flags & UCI_LOOKUP_COMPLETE)) {
+		e = p.last;
+
+		if (e->type == UCI_TYPE_SECTION) {
+			if (p.s) {
+				strlcpy(value, p.s->type, sizeof(value));
+
+			}
+		} else if (e->type == UCI_TYPE_OPTION) {
+			if (p.o && p.o->type == UCI_TYPE_STRING) {
+				strlcpy(value, p.o->v.string, sizeof(value));
+			}
+		}
+	}
+
+	uci_free_context(c);
+	return value;
+}
+
+void _set_config(int type, const char *fmt, ...)
+{
+	struct uci_context *c;
+	struct uci_ptr p;
+	char a[1024] = {0};
+	int ret = 0;
+
+	c = uci_alloc_context();
+
+	if (c == NULL) {
+		my_syslog(LOG_ERR, _("uci_alloc_context failed"));
+		return;
+	}
+
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(a, sizeof(a), fmt, ap);
+	va_end(ap);
+
+	if (UCI_OK != uci_lookup_ptr(c, &p, a, true)) {
+		goto err;
+	}
+
+	switch (type) {
+		case UCI_SET:
+			ret = uci_set(c, &p);
+			break;
+
+		case UCI_DEL:
+			ret = uci_delete(c, &p);
+			break;
+
+		case UCI_ADD_LIST:
+			ret = uci_add_list(c, &p);
+			break;
+
+		case UCI_DEL_LIST:
+			ret = uci_del_list(c, &p);
+			break;
+
+		case UCI_COMMIT:
+		default:
+			break;
+	}
+
+	if (UCI_OK != ret) {
+		goto err;
+	}
+
+	if ((UCI_COMMIT != type) && (UCI_OK != uci_save(c, p.p))) {
+		goto err;
+	}
+
+	if (UCI_OK != uci_commit(c, &p.p, false)) {
+		goto err;
+	}
+
+	uci_free_context(c);
+	return;
+err:
+	uci_perror(c, a);
+	uci_free_context(c);
+}
+
+int _get_section_num(const char *config, const char *section)
+{
+	struct uci_context *c;
+	struct uci_package *p = NULL;
+	struct uci_element *e = NULL;
+	int num = 0;
+
+	c = uci_alloc_context();
+
+	if (c == NULL) {
+		my_syslog(LOG_ERR, _("uci_alloc_context failed"));
+		return num;
+	}
+
+	if (UCI_OK != uci_load(c, config, &p)) {
+		uci_perror(c, section);
+		uci_free_context(c);
+		return num;
+	}
+
+	uci_foreach_element(&p->sections, e) {
+		struct uci_section *s = uci_to_section(e);
+
+		if (s->type != NULL && section != NULL)
+		{
+			if (strcmp(s->type, section) == 0) {
+				num++;
+			}
+		}
+	}
+
+	uci_free_context(c);
+	return num;
+}
+
+void _ubus_init()
+{
+	ctx = ubus_connect(NULL);
+
+	if (!ctx) {
+		die(_("ubus_connect failed"), NULL, EC_INIT_OFFSET);
+		exit(-1);
+	}
+}
+
+void _ubus_done()
+{
+	ubus_free(ctx);
+}
+
+static int split_timerange(char *timerange, char *arr_timerange[], char *arr_time[6])
+{
+	int i = 0;
+	char *buftmp = NULL;
+	int idx_time = 0;
+	int idx_timerange = 0;
+
+	arr_timerange[0] = strtok_r(timerange, ",", &buftmp);
+	while (arr_timerange[idx_timerange])
+	{
+		if (idx_timerange > 2)
+		{
+			return -1;
+		}
+		idx_timerange++;
+		arr_timerange[idx_timerange] = strtok_r(NULL, ",", &buftmp);
+	}
+
+	while (arr_timerange[i])
+	{
+		if (i > 3)
+		{
+			return -1;
+		}
+
+		arr_time[idx_time]=strtok_r(arr_timerange[i], "-", &buftmp);
+		while (arr_time[idx_time])
+		{
+			idx_time++;
+			arr_time[idx_time] = strtok_r(NULL, "-", &buftmp);
+		}
+		++i;
+	}
+
+	return 0;
+}
+
+static void init_server_rules(unsigned int tmpidx, struct server_rule *dns_filter_rules)
+{
+	int ret = 0;
+	char tmpenable[4] = {'\0'}, *arr_timerange[3] = {NULL};
+
+	dns_filter_rules->uci_idx = tmpidx;
+	dns_filter_rules->blockedtimes = atoi(_get_config("ctcapd.@dns_filter[%d].blockedtimes", tmpidx));
+	dns_filter_rules->idx = atoi(_get_config("ctcapd.@dns_filter[%d].idx", tmpidx));
+	strlcpy(dns_filter_rules->mac, _get_config("ctcapd.@dns_filter[%d].mac", tmpidx), sizeof(dns_filter_rules->mac));
+	dns_filter_rules->mode = atoi(_get_config("ctcapd.@dns_filter[%d].mode", tmpidx));
+	dns_filter_rules->action = atoi(_get_config("ctcapd.@dns_filter[%d].action", tmpidx));
+	strlcpy(dns_filter_rules->weekdays, _get_config("ctcapd.@dns_filter[%d].weekdays", tmpidx), sizeof(dns_filter_rules->weekdays));
+	strlcpy(dns_filter_rules->name, _get_config("ctcapd.@dns_filter[%d].name", tmpidx), sizeof(dns_filter_rules->name));
+	strlcpy(dns_filter_rules->hostnames, _get_config("ctcapd.@dns_filter[%d].hostnames", tmpidx), sizeof(dns_filter_rules->hostnames));
+	strlcpy(tmpenable, _get_config("ctcapd.@dns_filter[%d].enable", tmpidx), sizeof tmpenable);
+	strlcpy(dns_filter_rules->oritimerange, _get_config("ctcapd.@dns_filter[%d].timerange", tmpidx), sizeof dns_filter_rules->oritimerange);
+
+	ret = split_timerange(dns_filter_rules->oritimerange, arr_timerange, dns_filter_rules->timerange);
+	if (ret == -1)
+	{
+		memset(dns_filter_rules->timerange, 0, sizeof dns_filter_rules->timerange);
+		my_syslog(LOG_WARNING, _("param timerange is invalid"));
+	}
+
+	if (strcmp(tmpenable, "yes") == 0)
+	{
+		if (dns_filter_rules->mac[0] == '\0')
+		{
+			if (daemon->server_rules == NULL)
+			{
+				daemon->server_rules = dns_filter_rules;
+			}else{
+				dns_filter_rules->next = daemon->server_rules->next;
+				daemon->server_rules->next = dns_filter_rules;
+			}
+		}else{
+			if (daemon->server_rules_mac == NULL)
+			{
+				daemon->server_rules_mac = dns_filter_rules;
+			}else{
+				dns_filter_rules->next = daemon->server_rules_mac->next;
+				daemon->server_rules_mac->next = dns_filter_rules;
+			}
+		}
+	}
+}
+
+void _init_filter_rules()
+{
+	char buff[30] = {0};
+	char *endptr = NULL;
+	FILE *fp = NULL;
+	unsigned char is_found = 0;
+	unsigned int ucicount = 0;
+	struct server_rule *tmprule = NULL, *tmprulemac = NULL;
+
+	daemon->dns_filter_rules = NULL;
+	daemon->server_rules = NULL;
+	daemon->server_rules_mac = NULL;
+	daemon->is_ntp = 0;
+	memset(&daemon->match_server_rule, 0, sizeof(struct server_rule));
+
+	ucicount = _get_section_num("ctcapd", "dns_filter");
+	daemon->dns_filter_rules = calloc(ucicount, sizeof(struct server_rule));
+
+	for (size_t i = 0; i < ucicount; i++)
+	{
+		init_server_rules(i, daemon->dns_filter_rules + i);
+	}
+
+	for (size_t i = 0; i < sizeof(laninfo_table_policy) / sizeof(laninfo_table_policy[0]); ++i)
+	{
+		laninfo_table_policy[i].type = BLOBMSG_TYPE_TABLE;
+	}
+}
+
+void _uninit_filter_rules()
+{
+	if (daemon->dns_filter_rules != NULL)
+	{
+		free(daemon->dns_filter_rules);
+		daemon->dns_filter_rules = NULL;
+	}
+}
+
+void _set_blockedtimes(struct server_rule *serverrule)
+{
+	_set_config(UCI_SET, "ctcapd.@dns_filter[%d].blockedtimes=%d", serverrule->uci_idx, serverrule->blockedtimes);
+}
+
+static uint16_t myblobmsg_namelen(const struct blobmsg_hdr *hdr)
+{
+	return be16_to_cpu(hdr->namelen);
+}
+
+static int myblobmsg_parse_array(const struct blobmsg_policy *policy, int policy_len,
+			struct blob_attr **tb, void *data, unsigned int len)
+{
+	struct blob_attr *attr;
+	int i = 0;
+
+	memset(tb, 0, policy_len * sizeof(*tb));
+	__blob_for_each_attr(attr, data, len) {
+		if (policy[i].type != BLOBMSG_TYPE_UNSPEC &&
+		    blob_id(attr) != policy[i].type)
+			continue;
+
+		if (!blobmsg_check_attr(attr, false))
+			return -1;
+
+		if (tb[i])
+			continue;
+
+		tb[i++] = attr;
+		if (i == policy_len)
+			break;
+	}
+
+	return 0;
+}
+
+static int myblobmsg_parse_table_laninfo(const struct blobmsg_policy *policy, int policy_len,
+                  struct blob_attr **tb, void *data, unsigned int len)
+{
+	struct blob_attr *attr;
+	int i = 0;
+
+	memset(tb, 0, policy_len * sizeof(*tb));
+	__blob_for_each_attr(attr, data, len) {
+		if (policy[i].type != BLOBMSG_TYPE_UNSPEC &&
+		    blob_id(attr) != policy[i].type)
+			continue;
+
+		if (!blobmsg_check_attr(attr, false))
+			return -1;
+
+		if (tb[i])
+			continue;
+
+		tb[i++] = attr;
+		if (i == policy_len)
+			break;
+	}
+
+	return 0;
+}
+
+static int myblobmsg_parse_laninfo(const struct blobmsg_policy *policy, int policy_len,
+                  struct blob_attr **tb, void *data, unsigned int len)
+{
+	struct blobmsg_hdr *hdr;
+	struct blob_attr *attr;
+	uint8_t *pslen;
+	int i;
+	int flag;
+
+	memset(tb, 0, policy_len * sizeof(*tb));
+	pslen = alloca(policy_len);
+	for (i = 0; i < policy_len; i++) {
+		if (!policy[i].name)
+			continue;
+
+		pslen[i] = strlen(policy[i].name);
+	}
+
+	__blob_for_each_attr(attr, data, len) {
+		hdr = blob_data(attr);
+		for (i = 0; i < policy_len; i++) {
+			if (!policy[i].name)
+				continue;
+
+			if (myblobmsg_namelen(hdr) != pslen[i])
+				continue;
+
+			if (!blobmsg_check_attr(attr, true))
+				return -1;
+
+			if (tb[i])
+				continue;
+
+			if (strcmp(policy[i].name, (char *) hdr->name) != 0)
+				continue;
+
+			if (policy[i].type != BLOBMSG_TYPE_UNSPEC &&
+			    blob_id(attr) != policy[i].type) {
+				return -1;
+			}
+
+			tb[i] = attr;
+		}
+	}
+
+	return 0;
+}
+
+static void get_lan_info_cb(struct ubus_request *req, int type, struct blob_attr *msg)
+{
+	size_t i = 0;
+	struct blob_attr *blobarray[__LANINFO_ARRAY_MAX] = {NULL};
+	struct blob_attr *blobtb[64] = {NULL};
+	struct blob_attr *bloblaninfo[64][__LANINFO_MAX] = {NULL};
+
+	if (myblobmsg_parse_array(laninfo_array_policy, ARRAY_SIZE(laninfo_array_policy), blobarray, blob_data(msg), blob_len(msg)) != 0) {
+		my_syslog(LOG_WARNING, _("parse lan info table failed"));
+		return;
+	}
+
+	if (myblobmsg_parse_table_laninfo(laninfo_table_policy, ARRAY_SIZE(laninfo_table_policy), blobtb, blobmsg_data(blobarray[LANINFO_ARRAY]), blobmsg_len(blobarray[LANINFO_ARRAY])) != 0) {
+		my_syslog(LOG_WARNING, _("parse lan info array failed"));
+		return;
+	}
+
+	memset(&arr_laninfo, 0, sizeof(arr_laninfo));
+	while (blobtb[i] != NULL)
+	{
+		if (myblobmsg_parse_laninfo(laninfo_policy, ARRAY_SIZE(laninfo_policy), bloblaninfo[i], blobmsg_data(blobtb[i]), blobmsg_len(blobtb[i])) != 0) {
+			my_syslog(LOG_WARNING, _("parse lan info failed"));
+			return;
+		}
+
+		strlcpy(arr_laninfo[i].mac, blobmsg_get_string(bloblaninfo[i][LANINFO_MAC]), sizeof arr_laninfo[i].mac);
+		strlcpy(arr_laninfo[i].ipaddr, blobmsg_get_string(bloblaninfo[i][LANINFO_IPADDR]), sizeof arr_laninfo[i].ipaddr);
+		++i;
+	}
+}
+
+int _get_lan_info()
+{
+	unsigned int id = 0;
+	int ret = 0;
+
+	ret = ubus_lookup_id(ctx, "ctcapd.laninfo", &id);
+	if (ret != UBUS_STATUS_OK) {
+		my_syslog(LOG_WARNING, _("lookup scan_prog failed"));
+		return ret;
+	}
+
+	return ubus_invoke(ctx, id, "list", NULL, get_lan_info_cb, NULL, 600);
+}
+
+void _getdstmac(struct in_addr src_addr_4, char *bufmac)
+{
+	for (size_t i = 0; i < sizeof(arr_laninfo) / sizeof(arr_laninfo[0]) ; i++)
+	{
+		if (inet_addr(arr_laninfo[i].ipaddr) == src_addr_4.s_addr)
+		{
+			strlcpy(bufmac, arr_laninfo[i].mac, sizeof arr_laninfo);
+		}
+	}
+}
+
+static time_t str2time(char *str_time){
+	struct tm stm;
+	strptime(str_time, "%Y-%m-%d %H:%M:%S",&stm);
+
+	time_t t = mktime(&stm);
+	return t;
+}
+
+static int time_match(struct server_rule *tmprule)
+{
+	struct tm *p;
+	char weekday[2] = {'\0'};
+	int j = 0;
+	int is_in_time = 0;
+	time_t time1 = 0;
+	time_t time2 = 0;
+	time_t timenow = 0;
+	char strtmfmt1[17] = {'\0'};
+	char strtmfmt2[17] = {'\0'};
+	char *tmp00 = NULL;
+
+	timenow = time(NULL);
+	p = gmtime(&timenow);
+
+	if (p->tm_wday == 0)
+	{
+		sprintf(weekday, "%d", 7);
+	}else
+	{
+		sprintf(weekday, "%d", p->tm_wday);
+	}
+
+	if (tmprule->weekdays[0] == '\0')
+	{
+		return -2;
+	}else if (strstr(tmprule->weekdays, weekday) == NULL)
+	{
+		return -1;
+	}else if (strstr(tmprule->weekdays, weekday) != NULL)
+	{
+		if (tmprule->timerange[0] == NULL)
+		{
+			return -2;
+		}
+
+		while (tmprule->timerange[j])
+		{
+			memset(strtmfmt1, '\0', sizeof(strtmfmt1));
+			memset(strtmfmt2, '\0', sizeof(strtmfmt2));
+			if (j % 2 == 0)
+			{
+				sprintf(strtmfmt1, "%04d-%02d-%02d %s:00", p->tm_year + 1900, p->tm_mon + 1, p->tm_mday, tmprule->timerange[j]);
+				time1 = str2time(strtmfmt1);
+				tmp00 = tmprule->timerange[j];
+			}else if (j % 2 == 1){
+				if (tmp00 && strncmp(tmp00, tmprule->timerange[j], strlen(tmp00)) == 0 && strncmp(tmp00, "00:00", strlen(tmp00)) == 0)
+				{
+					return 0;
+				}
+
+				sprintf(strtmfmt2, "%04d-%02d-%02d %s:00", p->tm_year + 1900, p->tm_mon + 1, p->tm_mday, tmprule->timerange[j]);
+				time2 = str2time(strtmfmt2);
+				if (timenow >= time1 && timenow <= time2)
+				{
+					is_in_time = 1;
+				}
+			}
+
+			++j;
+		}
+
+		if (is_in_time == 1)
+		{
+			return 0;
+		}
+	}
+
+	return -1;
+}
+
+static unsigned ntpstatus()
+{
+	struct tm *p = NULL;
+	time_t timenow = 0;
+
+	timenow = time(NULL);
+	p = gmtime(&timenow);
+
+	if (p != NULL)
+		return p->tm_year > (2019 - 1900);
+	
+	return 0;
+}
+
+int _macth_rule_dnsfilter(struct in_addr src_addr_4)
+{
+	char tmpname[1025] = {0}, srcmac[18] = {'\0'}, *hostret = NULL;
+	int timematching = 0, is_found = 0, dotret = 0;
+	struct server_rule *tmprule = daemon->server_rules, *tmprulemac = daemon->server_rules_mac;
+
+	if (!daemon->is_ntp)
+	{
+		daemon->is_ntp = ntpstatus();
+	}
+
+	if (!daemon->is_ntp)
+	{
+		return -1;
+	}
+
+	memset(&daemon->match_server_rule, 0, sizeof(struct server_rule));
+	_getdstmac(src_addr_4, srcmac);
+
+	strlcpy(tmpname, daemon->namebuff, sizeof tmpname);
+	hostret = strrchr(tmpname, '.');
+	if (hostret != NULL)
+	{
+		dotret = hostret - tmpname;
+		tmpname[dotret] = '\0';
+		hostret = strrchr(tmpname, '.');
+		if (hostret != NULL)
+		{
+			dotret = hostret - tmpname;
+			strlcpy(tmpname, daemon->namebuff + dotret + 1, sizeof tmpname);
+		}else{
+			strlcpy(tmpname, daemon->namebuff, sizeof tmpname);
+		}
+	}
+
+	while (tmprulemac != NULL)
+	{
+		if (srcmac[0] == '\0')
+		{
+			break;
+		}
+
+		if (strncasecmp(srcmac, tmprulemac->mac, strlen(srcmac)) == 0)
+		{
+			timematching = time_match(tmprulemac);
+			if(timematching == -2)
+			{
+				return -2;
+			}else if (timematching == 0)
+			{
+				if (strstr(tmprulemac->hostnames, tmpname))
+				{
+					if (tmprulemac->mode == 0 && tmprulemac->action == 2)
+					{
+						tmprulemac->blockedtimes++;
+					}
+					memcpy(&daemon->match_server_rule, tmprulemac, sizeof(struct server_rule));
+					return 0;
+				}else if (is_found == 0){
+					daemon->match_server_rule.uci_idx = tmprulemac->uci_idx;
+					daemon->match_server_rule.mode = (tmprulemac->mode == 0 ? 1 : 0);
+					daemon->match_server_rule.action = tmprulemac->action;
+					if (daemon->match_server_rule.mode == 0 && daemon->match_server_rule.action == 2)
+					{
+						tmprulemac->blockedtimes++;
+					}
+					daemon->match_server_rule.blockedtimes = tmprulemac->blockedtimes;
+					is_found = 1;
+				}
+			}
+		}
+		tmprulemac = tmprulemac->next;
+	}
+
+	while (tmprule != NULL)
+	{
+		timematching = time_match(tmprule);
+		if (timematching == -2)
+		{
+			return -2;
+		}else if(timematching == 0)
+		{
+			if(strstr(tmprule->hostnames, tmpname))
+			{
+				if (tmprule->mode == 0 && tmprule->action == 2)
+				{
+					tmprule->blockedtimes++;
+				}
+				memcpy(&daemon->match_server_rule, tmprule, sizeof(struct server_rule));
+				return 0;
+			}else if (is_found == 0){
+				daemon->match_server_rule.uci_idx = tmprule->uci_idx;
+				daemon->match_server_rule.mode = (tmprule->mode == 0 ? 1 : 0);
+				daemon->match_server_rule.action = tmprule->action;
+				if (daemon->match_server_rule.mode == 0 && daemon->match_server_rule.action == 2)
+				{
+					tmprule->blockedtimes++;
+				}
+				daemon->match_server_rule.blockedtimes = tmprule->blockedtimes;
+				is_found = 1;
+			}
+		}
+		tmprule = tmprule->next;
+	}
+
+	if (is_found == 1)
+	{
+		return 0;
+	}
+
+	return -1;
+
+}
+
+in_addr_t _find_lanip(char *interface_name)
+{
+ struct irec *tmpirec = NULL;
+ for (tmpirec = daemon->interfaces; tmpirec; tmpirec = tmpirec->next)
+ {
+	 if (strncmp(tmpirec->name, interface_name, strlen(tmpirec->name)) == 0)
+	 {
+		 return tmpirec->addr.in.sin_addr.s_addr;
+	 }
+ }
+
+ return 0;
 }

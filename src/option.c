@@ -160,14 +160,6 @@ struct myoption {
 #define LOPT_DHCPTTL       348
 #define LOPT_TFTP_MTU      349
 #define LOPT_REPLY_DELAY   350
-#define LOPT_RULE_HOSTNAMES 351
-#define LOPT_RULE_NAME     352
-#define LOPT_RULE_ACTION   353
-#define LOPT_RULE_MAC      354
-#define LOPT_RULE_MODE     355
-#define LOPT_RULE_WEEKDAYS 356
-#define LOPT_RULE_TIMERANGE 357
-#define LOPT_RULE_IDX      358
  
 #ifdef HAVE_GETOPT_LONG
 static const struct option opts[] =  
@@ -333,14 +325,6 @@ static const struct myoption opts[] =
     { "script-arp", 0, 0, LOPT_SCRIPT_ARP },
     { "dhcp-ttl", 1, 0 , LOPT_DHCPTTL },
     { "dhcp-reply-delay", 1, 0, LOPT_REPLY_DELAY },
-    { "dnsfilter_hostnames", 1, 0, LOPT_RULE_HOSTNAMES},
-    { "dnsfilter_name", 1, 0, LOPT_RULE_NAME},
-    { "dnsfilter_action", 1, 0, LOPT_RULE_ACTION},
-    { "dnsfilter_mac", 1, 0, LOPT_RULE_MAC},
-    { "dnsfilter_mode", 1, 0, LOPT_RULE_MODE},
-    { "dnsfilter_weekdays", 1, 0, LOPT_RULE_WEEKDAYS},
-    { "dnsfilter_timerange", 1, 0, LOPT_RULE_TIMERANGE},
-	{ "dnsfilter_idx", 1, 0, LOPT_RULE_IDX},
     { NULL, 0, 0, 0 }
   };
 
@@ -1510,49 +1494,10 @@ void reset_option_bool(unsigned int opt)
     daemon->options2 &= ~(1u << (opt - 32));
 }
 
-static int split_timerange(char *timerange, char *arr_timerange[], char *arr_time[6])
-{
-	int i = 0;
-	char *buftmp = NULL;
-	int idx_time = 0;
-	int idx_timerange = 0;
-
-	arr_timerange[0] = strtok_r(timerange, ",", &buftmp);
-	while (arr_timerange[idx_timerange])
-	{
-		if (idx_timerange > 2)
-		{
-			return -1;
-		}
-		idx_timerange++;
-		arr_timerange[idx_timerange] = strtok_r(NULL, ",", &buftmp);
-	}
-
-	while (arr_timerange[i])
-	{
-		if (i > 3)
-		{
-			return -1;
-		}
-
-		arr_time[idx_time]=strtok_r(arr_timerange[i], "-", &buftmp);
-		while (arr_time[idx_time])
-		{
-			idx_time++;
-			arr_time[idx_time] = strtok_r(NULL, "-", &buftmp);
-		}
-		++i;
-	}
-
-	return 0;
-}
-
 static int one_opt(int option, char *arg, char *errstr, char *gen_err, int command_line, int servers_only)
 {      
   int i;
   char *comma;
-  static int sequence = 0;
-  static struct server_rule *serv_rule = NULL;
 
   if (option == '?')
     ret_err(gen_err);
@@ -4244,148 +4189,7 @@ err:
 	break;
       }
 #endif
-
-    case LOPT_RULE_IDX:
-	{
-		char *tmp = NULL;
-		if (sequence == 0)
-		{
-			sequence++;
-		}else{
-			ret_err(_("DNS FILTER RULE: sequence idx"));
-		}
-
-		serv_rule = opt_malloc(sizeof(struct server_rule));
-
-		if (serv_rule == NULL){
-			ret_err(_("serv_rule malloc"));
-		}
-
-		memset(serv_rule, 0, sizeof(struct server_rule));
-		serv_rule->idx = strtoul(arg, &tmp, 10);
-		break;
-	}
-	case LOPT_RULE_HOSTNAMES:
-	{
-		if (sequence == 1)
-		{
-			sequence++;
-		}else{
-			ret_err(_("DNS FILTER RULE: sequence hostnames"));
-		}
-		strncpy(serv_rule->hostnames, arg, sizeof(serv_rule->hostnames));
-		break;
-	}
-	case LOPT_RULE_ACTION:
-	{
-		if (sequence == 2)
-		{
-			sequence++;
-		}else{
-			ret_err(_("DNS FILTER RULE: : sequence action"));
-		}
-		serv_rule->action = (char)atoi(arg);
-		if (serv_rule->action < 0 || serv_rule->action > 2)
-		{
-			ret_err(_("DNS FILTER RULE: invalid param action"));
-		}
-		break;
-	}
-	case LOPT_RULE_MAC:
-	{
-		if (sequence == 3)
-		{
-			sequence++;
-		}else{
-			ret_err(_("DNS FILTER RULE: sequence mac"));
-		}
-		strncpy(serv_rule->mac, arg, sizeof(serv_rule->mac));
-		break;
-	}
-	case LOPT_RULE_NAME:
-	{
-		if (sequence == 4)
-		{
-			sequence++;
-		}else{
-			ret_err(_("DNS FILTER RULE: sequence rulename"));
-		}
-		strncpy(serv_rule->name, arg, sizeof(serv_rule->name));
-		break;
-	}
-	case LOPT_RULE_MODE:
-	{
-		if (sequence == 5)
-		{
-			sequence++;
-		}else{
-			ret_err(_("DNS FILTER RULE: sequence mode"));
-		}
-		serv_rule->mode = (char)atoi(arg);
-
-		if (serv_rule->mode < 0 || serv_rule->mode > 1)
-		{
-			ret_err(_("DNS FILTER RULE: invalid param mode"));
-		}
-		break;
-	}
-	case LOPT_RULE_WEEKDAYS:
-	{
-		if (sequence == 6)
-		{
-			sequence++;
-		}else{
-			ret_err(_("DNS FILTER RULE: sequence weekdays"));
-		}
-		strncpy(serv_rule->weekdays, arg, sizeof(serv_rule->weekdays));
-		break;
-	}
-	case LOPT_RULE_TIMERANGE:
-	{
-		int ret = 0;
-		char *tmptimerange = NULL;
-		char *arr_timerange[3] = {NULL};
-		struct server_rule *tmpserv_rule = NULL;
-
-		if (sequence == 7)
-		{
-			sequence = 0;
-		}else{
-			ret_err(_("DNS FILTER RULE: sequence timerange"));
-		}
-
-		tmptimerange = strdup(arg);
-
-		if (tmptimerange[0] != '\0')
-		{
-			ret = split_timerange(tmptimerange, arr_timerange, serv_rule->timerange);
-			if (ret == -1)
-			{
-				ret_err(_("DNS FILTER RULE: invalid param timerange"));
-			}
-		}
-
-		if (serv_rule->mac[0] == '\0')
-		{
-			tmpserv_rule = daemon->server_rules;
-			if (tmpserv_rule == NULL){
-				daemon->server_rules = serv_rule;
-				break;
-			}
-		}else if (serv_rule->mac[0] != '\0'){
-			tmpserv_rule = daemon->server_rules_mac;
-			if (tmpserv_rule == NULL){
-				daemon->server_rules_mac = serv_rule;
-				break;
-			}
-		}
-
-		serv_rule->next = tmpserv_rule->next;
-		tmpserv_rule->next = serv_rule;
-
-		break;
-	}
-
+		
     default:
       ret_err(_("unsupported option (check that dnsmasq was compiled with DHCP/TFTP/DNSSEC/DBus support)"));
       
@@ -4876,10 +4680,6 @@ void read_opts(int argc, char **argv, char *compile_opts)
   daemon->soa_expiry = SOA_EXPIRY;
   daemon->max_port = MAX_PORT;
   daemon->min_port = MIN_PORT;
-  daemon->server_rules = NULL;
-  daemon->server_rules_mac = NULL;
-  daemon->is_ntp = 0;
-  memset(&daemon->match_server_rule, 0, sizeof(struct server_rule));
 
 #ifndef NO_ID
   add_txt("version.bind", "dnsmasq-" VERSION, 0 );
@@ -5169,62 +4969,3 @@ void read_opts(int argc, char **argv, char *compile_opts)
       exit(0);
     }
 }  
-
-void init_blockedtimes()
-{
-	char buff[30] = {0};
-	char *endptr = NULL;
-	FILE *fp = NULL;
-	unsigned char is_found = 0;
-	struct server_rule *tmprule = NULL, *tmprulemac = NULL;
-
-	if (access("/tmp/dnsmasq_blockedtimes", F_OK) != 0){
-		if (open("/tmp/dnsmasq_blockedtimes", O_WRONLY|O_CREAT|O_TRUNC|O_EXCL, S_IWUSR|S_IRUSR|S_IRGRP|S_IROTH) == -1)
-		{
-			die(_("create file failed: %s"), "/tmp/dnsmasq_blockedtimes", EC_FILE);
-		}
-	}else{
-		fp = fopen("/tmp/dnsmasq_blockedtimes", "r");
-		if (fp == NULL)
-		{
-			die(_("read file failed: %s"), "/tmp/dnsmasq_blockedtimes", EC_FILE);
-		}
-
-		while(fgets(buff, sizeof(buff), fp) != NULL)
-		{
-			tmprule = daemon->server_rules;
-			tmprulemac = daemon->server_rules_mac;
-			while (tmprulemac)
-			{
-				if (tmprulemac->idx == strtoul(buff, &endptr, 10))
-				{
-					is_found = 1;
-					tmprulemac->blockedtimes = strtoul(endptr + 1, &endptr, 10);
-					tmprulemac->blockedtimes_in_file = 1;
-					break;
-				}
-				tmprulemac = tmprulemac->next;
-			}
-
-			if (is_found == 1)
-			{
-				is_found = 0;
-				continue;
-			}
-
-			while (tmprule)
-			{
-				if (tmprule->idx == strtoul(buff, &endptr, 10))
-				{
-					tmprule->blockedtimes = strtoul(endptr + 1, &endptr, 10);
-					tmprule->blockedtimes_in_file = 1;
-					break;
-				}
-				tmprule = tmprule->next;
-			}
-		}
-		fclose(fp);
-	}
-
-	return;
-}
