@@ -128,7 +128,6 @@ typedef unsigned long long u64;
 #endif
 
 #include <uci.h>
-#include <libubus.h>
 #include <libubox/blobmsg_json.h>
 
 #if defined(HAVE_LINUX_NETWORK)
@@ -267,25 +266,6 @@ struct event_desc {
 #define UCI_ADD_LIST	2
 #define UCI_DEL_LIST	3
 #define UCI_COMMIT		4
-
-enum LANINFO_ARRAY_POLICY
-{
-	LANINFO_ARRAY,
-	__LANINFO_ARRAY_MAX
-};
-
-enum LANINFO_POLICY
-{
-	LANINFO_MAC,
-	LANINFO_IPADDR,
-	__LANINFO_MAX
-};
-
-struct ap_laninfo
-{
-	char mac[17];
-	char ipaddr[16];
-};
 
 struct all_addr {
   union {
@@ -1284,13 +1264,9 @@ int wildcard_matchn(const char* wildcard, const char* match, int num);
 
 char *_get_config(const char *fmt, ...);
 void _set_config(int type, const char *fmt, ...);
-void _ubus_init();
-void _ubus_done();
 void _init_filter_rules();
 void _set_blockedtimes(struct server_rule *serverrule);
-int _time_match(struct server_rule *tmprule);
 int _macth_rule_dnsfilter(struct in_addr src_addr_4);
-int _get_lan_info();
 void _uninit_filter_rules();
 in_addr_t _find_lanip(char *interface_name);
 

@@ -902,24 +902,12 @@ int main (int argc, char **argv)
   /* Using inotify, have to select a resolv file at startup */
   poll_resolv(1, 0, now);
 #endif
-  _ubus_init();
   _init_filter_rules();
-
-  time_t time_get_laninfo = 0;
-  time(&time_get_laninfo);
-  _get_lan_info();
 
   while (1)
     {
       int t, timeout = -1;
-      time_t tmptime = 0;
       
-      time(&tmptime);
-      if (difftime(tmptime, time_get_laninfo) > 2 * 60 * 60)
-      {
-	      _get_lan_info();
-	      time_get_laninfo = tmptime;
-      }
       poll_reset();
       
       /* if we are out of resources, find how long we have to wait
@@ -1103,7 +1091,6 @@ int main (int argc, char **argv)
     }
 
 	_uninit_filter_rules();
-	_ubus_done();
 }
 
 static void sig_handler(int sig)

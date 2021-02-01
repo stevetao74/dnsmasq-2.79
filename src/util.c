@@ -20,9 +20,6 @@
 
 #include "dnsmasq.h"
 
-static struct ubus_context *ctx = NULL;
-static struct ap_laninfo arr_laninfo[64] = {0};
-
 #ifdef HAVE_BROKEN_RTC
 #include <sys/times.h>
 #endif
@@ -707,19 +704,6 @@ int wildcard_matchn(const char* wildcard, const char* match, int num)
   return (!num) || (*wildcard == *match);
 }
 
-static const struct blobmsg_policy laninfo_array_policy[__LANINFO_ARRAY_MAX] = 
-{
-	{.name = "ctcapd.laninfo", .type = BLOBMSG_TYPE_ARRAY}
-};
-
-static struct blobmsg_policy laninfo_table_policy[64] = {0};
-
-static const struct blobmsg_policy laninfo_policy[__LANINFO_MAX] = 
-{
-	{.name = "mac", .type = BLOBMSG_TYPE_STRING},
-	{.name = "ipaddr", .type = BLOBMSG_TYPE_STRING},
-};
-
 char *_get_config(const char *fmt, ...)
 {
 	struct uci_context *c;
@@ -860,21 +844,6 @@ int _get_section_num(const char *config, const char *section)
 	return num;
 }
 
-void _ubus_init()
-{
-	ctx = ubus_connect(NULL);
-
-	if (!ctx) {
-		die(_("ubus_connect failed"), NULL, EC_INIT_OFFSET);
-		exit(-1);
-	}
-}
-
-void _ubus_done()
-{
-	ubus_free(ctx);
-}
-
 static int split_timerange(char *timerange, char *arr_timerange[], char *arr_time[6])
 {
 	int i = 0;
@@ -981,11 +950,6 @@ void _init_filter_rules()
 	{
 		init_server_rules(i, daemon->dns_filter_rules + i);
 	}
-
-	for (size_t i = 0; i < sizeof(laninfo_table_policy) / sizeof(laninfo_table_policy[0]); ++i)
-	{
-		laninfo_table_policy[i].type = BLOBMSG_TYPE_TABLE;
-	}
 }
 
 void _uninit_filter_rules()
@@ -1002,165 +966,44 @@ void _set_blockedtimes(struct server_rule *serverrule)
 	_set_config(UCI_SET, "ctcapd.@dns_filter[%d].blockedtimes=%d", serverrule->uci_idx, serverrule->blockedtimes);
 }
 
-static uint16_t myblobmsg_namelen(const struct blobmsg_hdr *hdr)
+static void getdstmac(struct in_addr src_addr_4, char *bufmac)
 {
-	return be16_to_cpu(hdr->namelen);
-}
+	FILE* fp = NULL;
+	int is_first_line = 1;
+	char tmp[512] = {0};
+	char bufsplit[5][20] = {'\0'};
 
-static int myblobmsg_parse_array(const struct blobmsg_policy *policy, int policy_len,
-			struct blob_attr **tb, void *data, unsigned int len)
-{
-	struct blob_attr *attr;
-	int i = 0;
+	fp = fopen("/proc/net/arp", "r");
+	while (fgets(tmp, sizeof(tmp), fp) != NULL) {
+		int i = 0;
+		int j = 0;
 
-	memset(tb, 0, policy_len * sizeof(*tb));
-	__blob_for_each_attr(attr, data, len) {
-		if (policy[i].type != BLOBMSG_TYPE_UNSPEC &&
-		    blob_id(attr) != policy[i].type)
-			continue;
-
-		if (!blobmsg_check_attr(attr, false))
-			return -1;
-
-		if (tb[i])
-			continue;
-
-		tb[i++] = attr;
-		if (i == policy_len)
-			break;
-	}
-
-	return 0;
-}
-
-static int myblobmsg_parse_table_laninfo(const struct blobmsg_policy *policy, int policy_len,
-                  struct blob_attr **tb, void *data, unsigned int len)
-{
-	struct blob_attr *attr;
-	int i = 0;
-
-	memset(tb, 0, policy_len * sizeof(*tb));
-	__blob_for_each_attr(attr, data, len) {
-		if (policy[i].type != BLOBMSG_TYPE_UNSPEC &&
-		    blob_id(attr) != policy[i].type)
-			continue;
-
-		if (!blobmsg_check_attr(attr, false))
-			return -1;
-
-		if (tb[i])
-			continue;
-
-		tb[i++] = attr;
-		if (i == policy_len)
-			break;
-	}
-
-	return 0;
-}
-
-static int myblobmsg_parse_laninfo(const struct blobmsg_policy *policy, int policy_len,
-                  struct blob_attr **tb, void *data, unsigned int len)
-{
-	struct blobmsg_hdr *hdr;
-	struct blob_attr *attr;
-	uint8_t *pslen;
-	int i;
-	int flag;
-
-	memset(tb, 0, policy_len * sizeof(*tb));
-	pslen = alloca(policy_len);
-	for (i = 0; i < policy_len; i++) {
-		if (!policy[i].name)
-			continue;
-
-		pslen[i] = strlen(policy[i].name);
-	}
-
-	__blob_for_each_attr(attr, data, len) {
-		hdr = blob_data(attr);
-		for (i = 0; i < policy_len; i++) {
-			if (!policy[i].name)
+		if (is_first_line) {
+				is_first_line = 0;
+				memset(tmp, '\0', sizeof(tmp));
 				continue;
-
-			if (myblobmsg_namelen(hdr) != pslen[i])
-				continue;
-
-			if (!blobmsg_check_attr(attr, true))
-				return -1;
-
-			if (tb[i])
-				continue;
-
-			if (strcmp(policy[i].name, (char *) hdr->name) != 0)
-				continue;
-
-			if (policy[i].type != BLOBMSG_TYPE_UNSPEC &&
-			    blob_id(attr) != policy[i].type) {
-				return -1;
-			}
-
-			tb[i] = attr;
 		}
-	}
 
-	return 0;
-}
+		sscanf(tmp, "%s%*[ ]%s%*[ ]%s%*[ ]%s", bufsplit[0], bufsplit[1], bufsplit[2], bufsplit[3]);
 
-static void get_lan_info_cb(struct ubus_request *req, int type, struct blob_attr *msg)
-{
-	size_t i = 0;
-	struct blob_attr *blobarray[__LANINFO_ARRAY_MAX] = {NULL};
-	struct blob_attr *blobtb[64] = {NULL};
-	struct blob_attr *bloblaninfo[64][__LANINFO_MAX] = {NULL};
-
-	if (myblobmsg_parse_array(laninfo_array_policy, ARRAY_SIZE(laninfo_array_policy), blobarray, blob_data(msg), blob_len(msg)) != 0) {
-		my_syslog(LOG_WARNING, _("parse lan info table failed"));
-		return;
-	}
-
-	if (myblobmsg_parse_table_laninfo(laninfo_table_policy, ARRAY_SIZE(laninfo_table_policy), blobtb, blobmsg_data(blobarray[LANINFO_ARRAY]), blobmsg_len(blobarray[LANINFO_ARRAY])) != 0) {
-		my_syslog(LOG_WARNING, _("parse lan info array failed"));
-		return;
-	}
-
-	memset(&arr_laninfo, 0, sizeof(arr_laninfo));
-	while (blobtb[i] != NULL)
-	{
-		if (myblobmsg_parse_laninfo(laninfo_policy, ARRAY_SIZE(laninfo_policy), bloblaninfo[i], blobmsg_data(blobtb[i]), blobmsg_len(blobtb[i])) != 0) {
-			my_syslog(LOG_WARNING, _("parse lan info failed"));
+		if (inet_addr(bufsplit[0]) == src_addr_4.s_addr)
+		{
+			while(bufsplit[3][i] != '\0')
+			{
+				if (bufsplit[3][i] != ':') {
+					bufmac[j] = bufsplit[3][i];
+					++j;
+				}
+				++i;
+			}
+			fclose(fp);
 			return;
 		}
 
-		strlcpy(arr_laninfo[i].mac, blobmsg_get_string(bloblaninfo[i][LANINFO_MAC]), sizeof arr_laninfo[i].mac);
-		strlcpy(arr_laninfo[i].ipaddr, blobmsg_get_string(bloblaninfo[i][LANINFO_IPADDR]), sizeof arr_laninfo[i].ipaddr);
-		++i;
+		memset(tmp, '\0', sizeof(tmp));
+		memset(bufsplit, '\0', sizeof(bufsplit));
 	}
-}
-
-int _get_lan_info()
-{
-	unsigned int id = 0;
-	int ret = 0;
-
-	ret = ubus_lookup_id(ctx, "ctcapd.laninfo", &id);
-	if (ret != UBUS_STATUS_OK) {
-		my_syslog(LOG_WARNING, _("lookup scan_prog failed"));
-		return ret;
-	}
-
-	return ubus_invoke(ctx, id, "list", NULL, get_lan_info_cb, NULL, 600);
-}
-
-void _getdstmac(struct in_addr src_addr_4, char *bufmac)
-{
-	for (size_t i = 0; i < sizeof(arr_laninfo) / sizeof(arr_laninfo[0]) ; i++)
-	{
-		if (inet_addr(arr_laninfo[i].ipaddr) == src_addr_4.s_addr)
-		{
-			strlcpy(bufmac, arr_laninfo[i].mac, sizeof arr_laninfo);
-		}
-	}
+	fclose(fp);
 }
 
 static time_t str2time(char *str_time){
@@ -1274,7 +1117,7 @@ int _macth_rule_dnsfilter(struct in_addr src_addr_4)
 	}
 
 	memset(&daemon->match_server_rule, 0, sizeof(struct server_rule));
-	_getdstmac(src_addr_4, srcmac);
+	getdstmac(src_addr_4, srcmac);
 
 	strlcpy(tmpname, daemon->namebuff, sizeof tmpname);
 	hostret = strrchr(tmpname, '.');
